@@ -1,0 +1,119 @@
+name: "Terraform - Infra"
+
+on:
+  push:
+    paths:
+      - '**.tf'
+    branches:
+      - main
+  pull_request:
+    paths:
+      - '**.tf'
+      - '.github/workflows/terraform.yml'
+
+jobs:
+  setup-infra:
+    name: "Configurar infra da aplicação"
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      TF_VAR_vpc_cidr: ${{ secrets.TF_VAR_VPC_CIDR }}
+      TF_VAR_aws_region: ${{ secrets.TF_VAR_AWS_REGION }}
+      TF_VAR_eks_principal_arn: ${{ secrets.TF_VAR_EKS_PRINCIPAL_ARN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          # terraform_version: 0.13.0:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Terraform Format
+        id: fmt
+        run: |
+          echo 'FMT_OUTPUT<<DELIMITADOR' >> "$GITHUB_ENV"
+          echo "$(terraform fmt -check)" >> "$GITHUB_ENV"
+          echo 'DELIMITADOR' >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        id: init
+        run: |
+          echo 'INIT_OUTPUT<<DELIMITADOR' >> "$GITHUB_ENV"
+          echo "$(terraform init)" >> "$GITHUB_ENV"
+          echo 'DELIMITADOR' >> "$GITHUB_ENV"
+          
+      - name: Terraform Validate
+        id: validate
+        run: |
+          echo 'VALIDATE_OUTPUT<<DELIMITADOR' >> "$GITHUB_ENV"
+          echo "$(terraform validate -no-color)" >> "$GITHUB_ENV"
+          echo 'DELIMITADOR' >> "$GITHUB_ENV"
+
+      - name: Terraform Plan
+        id: plan
+        if: github.event_name == 'pull_request'
+        run: |
+          echo 'PLAN_OUTPUT<<DELIMITADOR' >> "$GITHUB_ENV"
+          echo "$(terraform plan -no-color -input=false)" >> "$GITHUB_ENV"
+          echo 'DELIMITADOR' >> "$GITHUB_ENV"
+
+      - name: Update Pull Request
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: ${{ steps.plan.outputs.stdout }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `
+            <details><summary>Show Format output</summary>
+
+            \`\`\`terraform\n
+            ${{ env.FMT_OUTPUT }}
+            \`\`\`
+
+            </details>
+
+            <details><summary>Show Init output</summary>
+
+            \`\`\`terraform\n
+            ${{ env.INIT_OUTPUT }}
+            \`\`\`
+
+            </details>
+
+            <details><summary>Show Validate output</summary>
+
+            \`\`\`terraform\n
+            ${{ env.VALIDATE_OUTPUT }}
+            \`\`\`
+
+            </details>
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`terraform\n
+            ${{ env.PLAN_OUTPUT }}
+            \`\`\`
+
+            </details>
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve -input=false
